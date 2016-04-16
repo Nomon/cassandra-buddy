@@ -132,10 +132,65 @@ func (s *s3Store) getFile(path string) (io.ReadCloser, error) {
 	return s.s3bucket.GetReader(path)
 }
 
+func (s *s3Store) downloadDirectory(src, dst string) error {
+	src = src[1:]
+	log.Println("Creating folder", dst)
+	if err := os.MkdirAll(dst, os.ModePerm); err != nil {
+		return err
+	}
+	log.Println("Download s3 path", src, "into", dst)
+	res, err := s.s3bucket.List(src+"/", "/", "", 1000)
+	if err != nil {
+		return err
+	}
+	for _, k := range res.Contents {
+		log.Println("Opening reader to ", k.Key)
+		// wrap in a function scope to close files
+		err := func(key string) error {
+			reader, err := s.getFile(key)
+			if err != nil {
+				return err
+			}
+			log.Println("creating file", filepath.Join(dst, filepath.Base(key)))
+			f, err := os.Create(filepath.Join(dst, filepath.Base(key)))
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(f, reader)
+			if err != nil && err != io.EOF {
+				return err
+			}
+			defer f.Close()
+			defer reader.Close()
+			return nil
+		}(k.Key)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *s3Store) downloadManifest(m *Manifest) error {
 	log.Println("downloadManifest", m)
+	errc := make(chan error, len(m.Paths))
+	defer close(errc)
+	var wg sync.WaitGroup
 	for _, dir := range m.Paths {
-		log.Println("Downloading directory", dir)
+		s3path := filepath.Join(m.Path, dir)
+		fsPath := filepath.Join(s.dataPath, dir)
+		wg.Add(1)
+		go func(src, dst string, ec chan error) {
+			defer wg.Done()
+			if err := s.downloadDirectory(src, dst); err != nil {
+				ec <- err
+			}
+		}(s3path, fsPath, errc)
+	}
+	wg.Wait()
+	if len(errc) > 0 {
+		err := <-errc
+		return err
 	}
 	return nil
 }

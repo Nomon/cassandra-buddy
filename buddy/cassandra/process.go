@@ -2,9 +2,11 @@ package cassandra
 
 import (
 	"bytes"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 )
 
@@ -12,6 +14,8 @@ type Process interface {
 	Start() error
 	Stop() error
 	Running() bool
+	ClearData(keyspaces []string) error
+	ClearLogs() error
 }
 
 func New(cfg *Config) Process {
@@ -34,10 +38,39 @@ func (c *cassandraProcess) Start() error {
 	c.stdout = new(bytes.Buffer)
 	c.cmd.Stdout = c.stdout
 	err := c.cmd.Start()
-	log.Println(c.cmd, err)
-	log.Println(c.cmd.Process)
-	log.Println(c.cmd.ProcessState)
 	return err
+}
+
+func (c *cassandraProcess) ClearData(keyspaces []string) error {
+	// if keyspaces are not provided, remove everything.
+	if len(keyspaces) == 0 {
+		ksdir, err := ioutil.ReadDir(c.cfg.DataPath)
+		if err != nil {
+			return err
+		}
+		for _, ks := range ksdir {
+			if ks.IsDir() {
+				keyspaces = append(keyspaces, ks.Name())
+			}
+		}
+	}
+	for _, ks := range keyspaces {
+		files, err := ioutil.ReadDir(filepath.Join(c.cfg.DataPath, ks))
+		if err != nil {
+			return err
+		}
+		for _, f := range files {
+			log.Println("Removing", filepath.Join(c.cfg.DataPath, ks, f.Name()))
+			if err := os.RemoveAll(filepath.Join(c.cfg.DataPath, ks, f.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *cassandraProcess) ClearLogs() error {
+	return nil
 }
 
 func (c *cassandraProcess) Stop() error {
@@ -53,6 +86,7 @@ func (c *cassandraProcess) Stop() error {
 	if err := c.cmd.Wait(); err != nil {
 		if execErr, ok := err.(*exec.ExitError); ok {
 			if status, ok := execErr.Sys().(syscall.WaitStatus); ok {
+				// 128 + SIGTERM = 143
 				if status.ExitStatus() == 143 {
 					return nil
 				}

@@ -58,6 +58,9 @@ func (s *Snapshots) Restore(args *structs.SnapshotsRestoreRequest, reply *struct
 		logger.Error("Failed to stop cassandra", "error", err)
 		return err
 	}
+	if err := s.srv.cas.ClearData(args.Keyspaces); err != nil {
+		logger.Error("Failed to clear cassandra data")
+	}
 	if err := s.srv.store.Get(args.Path); err != nil {
 		logger.Error("Failed to download backups", "error", err)
 		return err
